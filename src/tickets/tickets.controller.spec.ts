@@ -2,6 +2,7 @@ import { ConflictException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { Company } from '../../db/models/Company';
 import {
+  Ticket,
   TicketCategory,
   TicketStatus,
   TicketType,
@@ -190,6 +191,114 @@ describe('TicketsController', () => {
           controller.create({
             companyId: company.id,
             type: TicketType.registrationAddressChange,
+          }),
+        ).rejects.toEqual(
+          new Error(`Cannot find user with role director to create a ticket`),
+        );
+      });
+    });
+
+    describe('strikeOff', () => {
+      it('creates strikeOff ticket', async () => {
+        const company = await Company.create({ name: 'test' });
+        await User.create({
+          name: 'Test User',
+          role: UserRole.corporateSecretary,
+          companyId: company.id,
+        });
+        const director = await User.create({
+          name: 'Director User',
+          role: UserRole.director,
+          companyId: company.id,
+        });
+
+        await User.create({
+          name: 'Accountant User',
+          role: UserRole.accountant,
+          companyId: company.id,
+        });
+
+        await controller.create({
+          companyId: company.id,
+          type: TicketType.managementReport,
+        });
+
+        await controller.create({
+          companyId: company.id,
+          type: TicketType.managementReport,
+        });
+
+        await controller.create({
+          companyId: company.id,
+          type: TicketType.registrationAddressChange,
+        });
+
+        const ticket = await controller.create({
+          companyId: company.id,
+          type: TicketType.strikeOff,
+        });
+
+        expect(ticket.category).toBe(TicketCategory.management);
+        expect(ticket.assigneeId).toBe(director.id);
+
+        const tickets = await Ticket.findAll({
+          where: { companyId: company.id },
+        });
+
+        expect(
+          tickets.every(
+            (t) =>
+              t.type === TicketType.strikeOff ||
+              t.status === TicketStatus.resolved,
+          ),
+        ).toBe(true);
+      });
+
+      it('if there are multiple directors, throw', async () => {
+        const company = await Company.create({ name: 'test' });
+        await User.create({
+          name: 'Test User',
+          role: UserRole.corporateSecretary,
+          companyId: company.id,
+        });
+        await User.create({
+          name: 'Director User 1',
+          role: UserRole.director,
+          companyId: company.id,
+        });
+        await User.create({
+          name: 'Director User 2',
+          role: UserRole.director,
+          companyId: company.id,
+        });
+        await expect(
+          controller.create({
+            companyId: company.id,
+            type: TicketType.strikeOff,
+          }),
+        ).rejects.toEqual(
+          new Error(
+            `Multiple directors found for company ${company.id}. Cannot assign ticket.`,
+          ),
+        );
+      });
+
+      it('if there are no directors, throw', async () => {
+        const company = await Company.create({ name: 'test' });
+        await User.create({
+          name: 'Test User',
+          role: UserRole.corporateSecretary,
+          companyId: company.id,
+        });
+        await User.create({
+          name: 'Accountant User',
+          role: UserRole.accountant,
+          companyId: company.id,
+        });
+        await expect(
+          controller.create({
+            companyId: company.id,
+            type: TicketType.strikeOff,
           }),
         ).rejects.toEqual(
           new Error(`Cannot find user with role director to create a ticket`),

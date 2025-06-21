@@ -29,10 +29,7 @@ export class TicketsController {
     return await Ticket.findAll({ include: [Company, User] });
   }
 
-  async checkExistingRegistrationAddressChangeTicket(
-    type: TicketType,
-    companyId: number,
-  ) {
+  async checkExistingRegistrationAddressChangeTicket(companyId: number) {
     const existingRegistrationAddressChangeTicket = await Ticket.findOne({
       where: {
         companyId,
@@ -40,14 +37,22 @@ export class TicketsController {
       },
       order: [['createdAt', 'DESC']],
     });
-    if (
-      type === TicketType.registrationAddressChange &&
-      existingRegistrationAddressChangeTicket
-    ) {
+    if (existingRegistrationAddressChangeTicket) {
       throw new ConflictException(
         `Ticket with type registrationAddressChange already exists for company ${companyId}`,
       );
     }
+  }
+
+  async handleStrikeOffTicket(companyId: number) {
+    await Ticket.update(
+      { status: TicketStatus.resolved },
+      {
+        where: {
+          companyId,
+        },
+      },
+    );
   }
 
   async chooseAssignee(
@@ -65,12 +70,37 @@ export class TicketsController {
       );
     }
 
-    if (ticketType === TicketType.registrationAddressChange) {
-      const secretaries = assignees.filter(
-        (assignee) => assignee.role === UserRole.corporateSecretary,
-      );
+    switch (ticketType) {
+      case TicketType.registrationAddressChange: {
+        const secretaries = assignees.filter(
+          (assignee) => assignee.role === UserRole.corporateSecretary,
+        );
 
-      if (secretaries.length === 0) {
+        if (secretaries.length === 0) {
+          const directors = await User.findAll({
+            where: { companyId, role: UserRole.director },
+            order: [['createdAt', 'DESC']],
+          });
+
+          if (directors.length >= 2) {
+            throw new Error(
+              `Multiple directors found for company ${companyId}. Cannot assign ticket.`,
+            );
+          }
+
+          if (directors.length === 0) {
+            throw new Error(
+              `Cannot find user with role director to create a ticket`,
+            );
+          }
+
+          return directors[0];
+        }
+
+        break;
+      }
+
+      case TicketType.strikeOff: {
         const directors = await User.findAll({
           where: { companyId, role: UserRole.director },
           order: [['createdAt', 'DESC']],
@@ -90,6 +120,10 @@ export class TicketsController {
 
         return directors[0];
       }
+
+      default: {
+        break;
+      }
     }
 
     return assignees[0];
@@ -99,7 +133,9 @@ export class TicketsController {
     const category =
       type === TicketType.managementReport
         ? TicketCategory.accounting
-        : TicketCategory.corporate;
+        : type === TicketType.strikeOff
+          ? TicketCategory.management
+          : TicketCategory.corporate;
 
     const userRole =
       type === TicketType.managementReport
@@ -139,7 +175,21 @@ export class TicketsController {
       userRole,
     );
 
-    await this.checkExistingRegistrationAddressChangeTicket(type, companyId);
+    switch (type) {
+      case TicketType.registrationAddressChange: {
+        await this.checkExistingRegistrationAddressChangeTicket(companyId);
+        break;
+      }
+
+      case TicketType.strikeOff: {
+        await this.handleStrikeOffTicket(companyId);
+        break;
+      }
+
+      default: {
+        break;
+      }
+    }
 
     const ticket = await Ticket.create({
       companyId,
