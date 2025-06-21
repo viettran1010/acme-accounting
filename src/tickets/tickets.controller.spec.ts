@@ -305,5 +305,55 @@ describe('TicketsController', () => {
         );
       });
     });
+
+    describe('perfomance', () => {
+      it('can handle 15000 users', async () => {
+        const company = await Company.create({ name: 'test' });
+        await Promise.all(
+          Array.from({ length: 5000 }, (_, i) =>
+            User.create({
+              name: `User ${i + 1}`,
+              role: UserRole.accountant,
+              companyId: company.id,
+            }),
+          ),
+        );
+
+        await Promise.all(
+          Array.from({ length: 5000 }, (_, i) =>
+            User.create({
+              companyId: company.id,
+              role: UserRole.corporateSecretary,
+            }),
+          ),
+        );
+
+        await Promise.all(
+          Array.from({ length: 5000 }, (_, i) =>
+            User.create({
+              companyId: company.id,
+              role: UserRole.director,
+            }),
+          ),
+        );
+
+        const start = Date.now();
+
+        await expect(
+          controller.create({
+            companyId: company.id,
+            type: TicketType.registrationAddressChange,
+          }),
+        ).rejects.toEqual(
+          new ConflictException(
+            `Multiple users with role corporateSecretary. Cannot create a ticket`,
+          ),
+        );
+
+        console.log(
+          `Performance test for 15000 users took ${Date.now() - start} ms`,
+        );
+      });
+    });
   });
 });
