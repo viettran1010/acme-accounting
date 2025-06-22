@@ -28,6 +28,7 @@ module.exports = {
         type: Sequelize.DATE,
       },
     });
+    await queryInterface.addIndex('users', ['companyId', 'role']);
   },
   async down(queryInterface, Sequelize) {
     await queryInterface.dropTable('users');

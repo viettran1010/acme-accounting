@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import fs from 'fs';
 import path from 'path';
 import { performance } from 'perf_hooks';
+import { Worker } from 'worker_threads';
+import * as fsp from 'fs/promises';
 
 @Injectable()
 export class ReportsService {
@@ -11,80 +13,79 @@ export class ReportsService {
     fs: 'idle',
   };
 
-  state(scope: string) {
+  state(scope: 'accounts' | 'yearly' | 'fs') {
     return this.states[scope];
   }
 
-  accounts() {
+  async accountsAndYearlyAndFS() {
     this.states.accounts = 'starting';
-    const start = performance.now();
-    const tmpDir = 'tmp';
-    const outputFile = 'out/accounts.csv';
-    const accountBalances: Record<string, number> = {};
-    fs.readdirSync(tmpDir).forEach((file) => {
-      if (file.endsWith('.csv')) {
-        const lines = fs
-          .readFileSync(path.join(tmpDir, file), 'utf-8')
-          .trim()
-          .split('\n');
-        for (const line of lines) {
-          const [, account, , debit, credit] = line.split(',');
-          if (!accountBalances[account]) {
-            accountBalances[account] = 0;
-          }
-          accountBalances[account] +=
-            parseFloat(String(debit || 0)) - parseFloat(String(credit || 0));
-        }
-      }
-    });
-    const output = ['Account,Balance'];
-    for (const [account, balance] of Object.entries(accountBalances)) {
-      output.push(`${account},${balance.toFixed(2)}`);
-    }
-    fs.writeFileSync(outputFile, output.join('\n'));
-    this.states.accounts = `finished in ${((performance.now() - start) / 1000).toFixed(2)}`;
-  }
-
-  yearly() {
     this.states.yearly = 'starting';
-    const start = performance.now();
-    const tmpDir = 'tmp';
-    const outputFile = 'out/yearly.csv';
-    const cashByYear: Record<string, number> = {};
-    fs.readdirSync(tmpDir).forEach((file) => {
-      if (file.endsWith('.csv') && file !== 'yearly.csv') {
-        const lines = fs
-          .readFileSync(path.join(tmpDir, file), 'utf-8')
-          .trim()
-          .split('\n');
-        for (const line of lines) {
-          const [date, account, , debit, credit] = line.split(',');
-          if (account === 'Cash') {
-            const year = new Date(date).getFullYear();
-            if (!cashByYear[year]) {
-              cashByYear[year] = 0;
-            }
-            cashByYear[year] +=
-              parseFloat(String(debit || 0)) - parseFloat(String(credit || 0));
-          }
-        }
-      }
-    });
-    const output = ['Financial Year,Cash Balance'];
-    Object.keys(cashByYear)
-      .sort()
-      .forEach((year) => {
-        output.push(`${year},${cashByYear[year].toFixed(2)}`);
-      });
-    fs.writeFileSync(outputFile, output.join('\n'));
-    this.states.yearly = `finished in ${((performance.now() - start) / 1000).toFixed(2)}`;
-  }
-
-  fs() {
     this.states.fs = 'starting';
     const start = performance.now();
     const tmpDir = 'tmp';
-    const outputFile = 'out/fs.csv';
+
+    const accountBalances: Record<string, number> = {};
+    const cashByYear: Record<string, number> = {};
+    const fsBalances: Record<string, number> = {};
+
+    const files = await fsp.readdir(tmpDir);
+    const csvFiles = files.filter((f) => f.endsWith('.csv') && f !== 'fs.csv');
+
+    const results = await Promise.all(
+      csvFiles.map(
+        (file) =>
+          new Promise<{
+            accountBalances: Record<string, number>;
+            cashByYear: Record<string, number>;
+            financialAccounts: Record<string, number>;
+          }>((resolve, reject) => {
+            const worker = new Worker(
+              path.resolve(__dirname, './workers/reports.worker.js'),
+              {
+                workerData: { filePath: path.join(tmpDir, file) },
+              },
+            );
+            worker.on('message', resolve);
+            worker.on('error', reject);
+            worker.on('exit', (code) => {
+              if (code !== 0)
+                reject(new Error(`Worker exited with code ${code}`));
+            });
+          }),
+      ),
+    );
+
+    for (const {
+      accountBalances: a,
+      cashByYear: y,
+      financialAccounts: f,
+    } of results) {
+      for (const [k, v] of Object.entries(a))
+        accountBalances[k] = (accountBalances[k] || 0) + v;
+      for (const [k, v] of Object.entries(y))
+        cashByYear[k] = (cashByYear[k] || 0) + v;
+      for (const [k, v] of Object.entries(f))
+        fsBalances[k] = (fsBalances[k] || 0) + v;
+    }
+
+    const accountsOutput = ['Account,Balance'];
+    for (const [account, balance] of Object.entries(accountBalances)) {
+      accountsOutput.push(`${account},${balance.toFixed(2)}`);
+    }
+    fs.writeFileSync('out/accounts.csv', accountsOutput.join('\n'));
+    this.states.accounts =
+      'finished in ' + ((performance.now() - start) / 1000).toFixed(2) + 's';
+
+    const yearlyOutput = ['Financial Year,Cash Balance'];
+    for (const year of Object.keys(cashByYear).sort()) {
+      yearlyOutput.push(`${year},${cashByYear[year].toFixed(2)}`);
+    }
+    fs.writeFileSync('out/yearly.csv', yearlyOutput.join('\n'));
+    this.states.yearly = `finished in ${(
+      (performance.now() - start) /
+      1000
+    ).toFixed(2)}s`;
+
     const categories = {
       'Income Statement': {
         Revenues: ['Sales Revenue'],
@@ -116,86 +117,69 @@ export class ReportsService {
         Equity: ['Common Stock', 'Retained Earnings'],
       },
     };
-    const balances: Record<string, number> = {};
-    for (const section of Object.values(categories)) {
-      for (const group of Object.values(section)) {
-        for (const account of group) {
-          balances[account] = 0;
-        }
-      }
-    }
-    fs.readdirSync(tmpDir).forEach((file) => {
-      if (file.endsWith('.csv') && file !== 'fs.csv') {
-        const lines = fs
-          .readFileSync(path.join(tmpDir, file), 'utf-8')
-          .trim()
-          .split('\n');
 
-        for (const line of lines) {
-          const [, account, , debit, credit] = line.split(',');
+    const fsOutput: string[] = [];
+    fsOutput.push('Basic Financial Statement\n');
+    fsOutput.push('Income Statement');
 
-          if (balances.hasOwnProperty(account)) {
-            balances[account] +=
-              parseFloat(String(debit || 0)) - parseFloat(String(credit || 0));
-          }
-        }
-      }
-    });
-
-    const output: string[] = [];
-    output.push('Basic Financial Statement');
-    output.push('');
-    output.push('Income Statement');
     let totalRevenue = 0;
     let totalExpenses = 0;
-    for (const account of categories['Income Statement']['Revenues']) {
-      const value = balances[account] || 0;
-      output.push(`${account},${value.toFixed(2)}`);
-      totalRevenue += value;
+
+    for (const acc of categories['Income Statement'].Revenues) {
+      const val = fsBalances[acc] || 0;
+      fsOutput.push(`${acc},${val.toFixed(2)}`);
+      totalRevenue += val;
     }
-    for (const account of categories['Income Statement']['Expenses']) {
-      const value = balances[account] || 0;
-      output.push(`${account},${value.toFixed(2)}`);
-      totalExpenses += value;
+    for (const acc of categories['Income Statement'].Expenses) {
+      const val = fsBalances[acc] || 0;
+      fsOutput.push(`${acc},${val.toFixed(2)}`);
+      totalExpenses += val;
     }
-    output.push(`Net Income,${(totalRevenue - totalExpenses).toFixed(2)}`);
-    output.push('');
-    output.push('Balance Sheet');
-    let totalAssets = 0;
-    let totalLiabilities = 0;
-    let totalEquity = 0;
-    output.push('Assets');
-    for (const account of categories['Balance Sheet']['Assets']) {
-      const value = balances[account] || 0;
-      output.push(`${account},${value.toFixed(2)}`);
-      totalAssets += value;
+
+    const netIncome = totalRevenue - totalExpenses;
+    fsOutput.push(`Net Income,${netIncome.toFixed(2)}\n`);
+
+    fsOutput.push('Balance Sheet');
+    let totalAssets = 0,
+      totalLiabilities = 0,
+      totalEquity = 0;
+
+    fsOutput.push('Assets');
+    for (const acc of categories['Balance Sheet'].Assets) {
+      const val = fsBalances[acc] || 0;
+      fsOutput.push(`${acc},${val.toFixed(2)}`);
+      totalAssets += val;
     }
-    output.push(`Total Assets,${totalAssets.toFixed(2)}`);
-    output.push('');
-    output.push('Liabilities');
-    for (const account of categories['Balance Sheet']['Liabilities']) {
-      const value = balances[account] || 0;
-      output.push(`${account},${value.toFixed(2)}`);
-      totalLiabilities += value;
+    fsOutput.push(`Total Assets,${totalAssets.toFixed(2)}\n`);
+
+    fsOutput.push('Liabilities');
+    for (const acc of categories['Balance Sheet'].Liabilities) {
+      const val = fsBalances[acc] || 0;
+      fsOutput.push(`${acc},${val.toFixed(2)}`);
+      totalLiabilities += val;
     }
-    output.push(`Total Liabilities,${totalLiabilities.toFixed(2)}`);
-    output.push('');
-    output.push('Equity');
-    for (const account of categories['Balance Sheet']['Equity']) {
-      const value = balances[account] || 0;
-      output.push(`${account},${value.toFixed(2)}`);
-      totalEquity += value;
+    fsOutput.push(`Total Liabilities,${totalLiabilities.toFixed(2)}\n`);
+
+    fsOutput.push('Equity');
+    for (const acc of categories['Balance Sheet'].Equity) {
+      const val = fsBalances[acc] || 0;
+      fsOutput.push(`${acc},${val.toFixed(2)}`);
+      totalEquity += val;
     }
-    output.push(
-      `Retained Earnings (Net Income),${(totalRevenue - totalExpenses).toFixed(2)}`,
-    );
-    totalEquity += totalRevenue - totalExpenses;
-    output.push(`Total Equity,${totalEquity.toFixed(2)}`);
-    output.push('');
-    output.push(
+    fsOutput.push(`Retained Earnings (Net Income),${netIncome.toFixed(2)}`);
+    totalEquity += netIncome;
+    fsOutput.push(`Total Equity,${totalEquity.toFixed(2)}\n`);
+    fsOutput.push(
       `Assets = Liabilities + Equity, ${totalAssets.toFixed(2)} = ${(totalLiabilities + totalEquity).toFixed(2)}`,
     );
-    fs.writeFileSync(outputFile, output.join('\n'));
-    this.states.fs = `finished in ${((performance.now() - start) / 1000).toFixed(2)}`;
+
+    fs.writeFileSync('out/fs.csv', fsOutput.join('\n'));
+    this.states.fs = `finished in ${(
+      (performance.now() - start) /
+      1000
+    ).toFixed(2)}s`;
+
+    const duration = ((performance.now() - start) / 1000).toFixed(2);
+    console.log(`All reports generated in ${duration}s`);
   }
 }
