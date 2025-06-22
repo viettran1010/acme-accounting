@@ -1,0 +1,9 @@
+### Report status
+GET http://localhost:3000/api/v1/reports/
+
+### Create a new report
+POST http://localhost:3000/api/v1/reports
+Content-Type: application/json
+
+{
+}

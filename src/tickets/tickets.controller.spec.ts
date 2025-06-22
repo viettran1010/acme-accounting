@@ -320,7 +320,7 @@ describe('TicketsController', () => {
         );
 
         await Promise.all(
-          Array.from({ length: 5000 }, (_, i) =>
+          Array.from({ length: 5000 }, () =>
             User.create({
               companyId: company.id,
               role: UserRole.corporateSecretary,
@@ -329,7 +329,7 @@ describe('TicketsController', () => {
         );
 
         await Promise.all(
-          Array.from({ length: 5000 }, (_, i) =>
+          Array.from({ length: 5000 }, () =>
             User.create({
               companyId: company.id,
               role: UserRole.director,
