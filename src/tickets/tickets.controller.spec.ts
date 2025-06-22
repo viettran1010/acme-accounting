@@ -10,6 +10,7 @@ import {
 import { User, UserRole } from '../../db/models/User';
 import { DbModule } from '../db.module';
 import { TicketsController } from './tickets.controller';
+import { TicketsService } from './tickets.service';
 
 describe('TicketsController', () => {
   let controller: TicketsController;
@@ -18,6 +19,7 @@ describe('TicketsController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [TicketsController],
       imports: [DbModule],
+      providers: [TicketsService],
     }).compile();
 
     controller = module.get<TicketsController>(TicketsController);
